@@ -1,5 +1,8 @@
+from streamlit_extras.let_it_rain import rain
 import streamlit as st
 import pandas as pd
+import requests  # <-- ADD THIS
+from streamlit_lottie import st_lottie
 from io import StringIO
 import xgboost as xgb
 #import shap
@@ -10,6 +13,21 @@ from sklearn.impute import SimpleImputer
 import numpy as np
 from fpdf import FPDF
 import datetime
+import animations  # <-- ADD THIS (imports your new file)
+import time
+
+def load_lottieurl(url: str):
+    """Fetches a Lottie JSON from a URL with error handling."""
+    try:
+        r = requests.get(url)
+        r.raise_for_status() # Raises an error for bad responses (4xx or 5xx)
+        return r.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error loading Lottie animation: {e}")
+        return None
+    except requests.exceptions.JSONDecodeError:
+        st.error("Error: Failed to decode Lottie JSON. Is this a valid URL?")
+        return None
 
 
 
@@ -403,8 +421,36 @@ if 'cleaned_data' not in st.session_state:
     st.session_state.missing_report = pd.DataFrame()
 
 st.set_page_config(layout="wide")
-st.title("Data Health & Risk Auditor 📈")
+# --- NEW TITLE & ANIMATION ---
+# 1. Load the Lottie animation
+# NEW, RELIABLE URL:
+# --- NEW TITLE & ANIMATION ---
+# 1. Load the Lottie animation
+lottie_json = animations.load_lottieurl(animations.LOTTIE_URL_HEADER)
 
+# 2. Create a two-column layout
+col1, col2 = st.columns([1, 4])
+# ... (rest of the code)
+
+with col1:
+    if lottie_json:
+        st_lottie(
+            lottie_json,
+            speed=1,
+            reverse=False,
+            loop=True,
+            quality="low", # Use "low" for better performance
+            height=150,
+            width=150,
+            key="data_animation"
+        )
+    else:
+        st.write("Loading animation...")
+
+with col2:
+    st.title("Data Health & Risk Auditor")
+    st.markdown("*Your all-in-one tool for cleaning 'data manure'.*")
+# --- END NEW TITLE ---
 uploaded_file = st.file_uploader("Choose a CSV file")
 
 if uploaded_file is not None:
@@ -457,12 +503,21 @@ if uploaded_file is not None:
             st.info("No missing data found to clean.")
 
     # --- Main Button ---
+   # --- Main Button ---
     if st.button("Run Data Audit & Clean"):
         
-        # Replace st.balloons() with st.status()
         with st.status("Running Data Audit & Cleaning...", expanded=True) as status:
             
-            # --- Run all reports and log progress ---
+            # --- 1. Create a placeholder for our animations ---
+            animation_placeholder = st.empty()
+            
+            # --- 2. Show the PROCESSING animation ---
+            lottie_processing = animations.load_lottielocal(animations.PROCESSING_ANIMATION_PATH)
+            if lottie_processing:
+                with animation_placeholder.container():
+                    st_lottie(lottie_processing, speed=1, loop=True, quality="low", height=150, width=150)
+            
+            # --- 3. Run all your existing steps (unchanged) ---
             st.write("Step 1/5: Analyzing data quality (toxicity)...")
             st.session_state.missing_report = get_quality_report(dataframe)
             
@@ -478,7 +533,6 @@ if uploaded_file is not None:
             st.write("Step 5/5: Generating final recommendations...")
             st.session_state.critical_features = get_final_recommendations(st.session_state.risky_columns, st.session_state.top_features)
             
-            # --- Run cleaning ---
             st.write("Applying cleaning operations...")
             cleaned_df = clean_data(dataframe, st.session_state.risky_columns, st.session_state.outlier_indices, 
                                     do_pii_removal, do_outlier_removal, do_missing_fix, 
@@ -487,9 +541,23 @@ if uploaded_file is not None:
             st.session_state.cleaned_data = cleaned_df
             st.session_state.audit_run = True
             
-            # Update the status box to "complete"
+            # --- 4. Show the "BUGS CLEARED" animation ---
+            lottie_complete = animations.load_lottielocal(animations.COMPLETE_ANIMATION_PATH)
+            if lottie_complete:
+                with animation_placeholder.container():
+                    st_lottie(lottie_complete, speed=1, loop=False, quality="low", height=150, width=150)
+            
+            # Pause for a moment to see the "complete" animation
+            time.sleep(2) 
+            
+            # --- 5. Update the status box to "complete" ---
             status.update(label="Audit Complete!", state="complete")
-
+            rain(
+            emoji="👾",  # You can use any emoji here!
+            font_size=54,
+            falling_speed=2,
+            animation_length="10s",
+        )
 # --- Show download buttons ONLY if the audit has been run ---
 if st.session_state.audit_run:
     st.header("Download Results")
