@@ -1,0 +1,13 @@
+customer_name,email,age,plan_type,monthly_spend,last_login_days_ago,has_churned
+John Smith,john.smith@example.com,65,Gold,150.0,5,Yes
+Jane Doe,jane.doe@webmail.com,22,Silver,70.5,1,No
+Robert Brown,rob.brown@email.com,45,Silver,80.0,20,Yes
+Emily Davis,emily@company.com,30,Bronze,,2,No
+Michael Wilson,mike.w@example.com,50,Gold,140.0,8,No
+Sarah Miller,s.miller@webmail.com,28,Bronze,45.0,3,No
+John Smith,jsmith2@personal.com,33,Silver,75.0,30,Yes
+David Lee,d.lee@company.com,42,Gold,160.0,1,No
+Laura White,laura.white@email.com,55,Platinum,999.0,12,Yes
+John Smith,smith.john@fastmail.com,29,Bronze,50.0,45,Yes
+Jessica Chen,jess.chen@example.com,38,Platinum,210.0,4,No
+Mark Taylor,mark.t@webmail.com,61,,135.0,9,No

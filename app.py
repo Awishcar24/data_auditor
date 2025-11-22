@@ -1,598 +1,539 @@
-from streamlit_extras.let_it_rain import rain
 import streamlit as st
 import pandas as pd
-import requests  # <-- ADD THIS
-from streamlit_lottie import st_lottie
-from io import StringIO
-import xgboost as xgb
-#import shap
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-#import matplotlib.pyplot as plt
-from sklearn.impute import SimpleImputer
 import numpy as np
+import xgboost as xgb
+import time
+import seaborn as sns
+import matplotlib.pyplot as plt
+import io
+
+# --- UI & Animation Libraries ---
+from streamlit_lottie import st_lottie
+from streamlit_extras.let_it_rain import rain
+import animations
+
+# --- Machine Learning & Data Processing ---
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPRegressor
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+from scipy.stats import ks_2samp
+
+# --- NLP & Reporting ---
+from presidio_analyzer import AnalyzerEngine
 from fpdf import FPDF
 import datetime
-import animations  # <-- ADD THIS (imports your new file)
-import time
 
-def load_lottieurl(url: str):
-    """Fetches a Lottie JSON from a URL with error handling."""
-    try:
-        r = requests.get(url)
-        r.raise_for_status() # Raises an error for bad responses (4xx or 5xx)
-        return r.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error loading Lottie animation: {e}")
-        return None
-    except requests.exceptions.JSONDecodeError:
-        st.error("Error: Failed to decode Lottie JSON. Is this a valid URL?")
-        return None
+# ==========================================
+# 0. PAGE CONFIG & CSS
+# ==========================================
+st.set_page_config(layout="wide", page_title="Data Refinery")
 
+st.markdown("""
+<style>
+    .stApp { background: linear-gradient(180deg, #FFFFFF 0%, #F0F2F6 100%) !important; }
+    @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Roboto Mono', monospace !important; color: #31333F !important; }
+    div[data-testid="stMetric"], div[data-testid="stExpander"], div[data-testid="stStatusWidget"] {
+        background-color: rgba(255, 255, 255, 0.9) !important;
+        border: 1px solid #E0E0E0 !important;
+        border-radius: 10px !important;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05) !important;
+    }
+    div[data-testid="stMetricValue"] { color: #6a11cb !important; }
+    div.stButton > button, div.stDownloadButton > button {
+        background-image: linear-gradient(45deg, #6a11cb 0%, #2575fc 100%) !important;
+        color: white !important;
+        border-radius: 50px !important;
+        border: none !important;
+        padding: 12px 20px !important;
+        font-weight: bold !important;
+        width: 100% !important;
+        box-shadow: 0 4px 10px rgba(106, 17, 203, 0.3) !important;
+        transition: all 0.3s ease !important;
+    }
+    div.stButton > button:hover, div.stDownloadButton > button:hover {
+        transform: translateY(-3px) !important;
+        box-shadow: 0 6px 20px rgba(37, 117, 252, 0.5) !important;
+    }
+    div[data-testid="stFileUploader"] {
+        background-color: #ffffff !important;
+        border: 1px dashed #6a11cb !important;
+        border-radius: 10px !important;
+        padding: 15px !important;
+    }
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
+# ==========================================
+# 1. HELPER FUNCTIONS
+# ==========================================
+
+def add_download_button(fig, key_name):
+    """Helper to add a download button for any matplotlib figure"""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    st.download_button(
+        label="💾 Download Plot",
+        data=buf,
+        file_name=f"{key_name}.png",
+        mime="image/png",
+        key=key_name
+    )
 
 def get_quality_report(df):
-    st.header("1. Quality Report (Toxicity)")
-
-    # Calculate missing data
     missing_data = df.isnull().sum()
     missing_percentage = (missing_data / len(df)) * 100
     missing_report = pd.DataFrame({
         'Missing Values': missing_data,
         'Percentage (%)': missing_percentage
     })
-
-    st.subheader("Missing Data")
-    st.dataframe(missing_report[missing_report['Missing Values'] > 0])
     return missing_report[missing_report['Missing Values'] > 0]
 
-from sklearn.ensemble import IsolationForest
-
 def get_outlier_report(df):
-    st.subheader("Outlier Detection (Isolation Forest)")
     numerical_cols = df.select_dtypes(include=[np.number]).columns
-    
-    # This will hold the indices of outlier rows
     outlier_indices = [] 
-    
     if len(numerical_cols) > 0:
-        # Create a simple report
-        clf = IsolationForest(contamination=0.1, random_state=42)
+        numerical_data = df[numerical_cols].fillna(0)
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(numerical_data)
         
-        # We need to fillna just for the fit_predict to work
-        numerical_data = df[numerical_cols].fillna(0) 
-        outliers = clf.fit_predict(numerical_data)
+        iso_forest = IsolationForest(contamination=0.1, random_state=42)
+        iso_preds = iso_forest.fit_predict(X_scaled) 
         
-        # Get the actual index numbers of the rows that are outliers
-        outlier_indices = df.index[outliers == -1].tolist()
+        autoencoder = MLPRegressor(hidden_layer_sizes=(10, 5, 10), random_state=42, max_iter=500)
+        autoencoder.fit(X_scaled, X_scaled)
+        X_pred = autoencoder.predict(X_scaled)
+        mse = np.mean(np.power(X_scaled - X_pred, 2), axis=1)
+        error_threshold = np.percentile(mse, 90) 
+        ae_preds = np.where(mse > error_threshold, -1, 1)
         
-        outlier_percentage = len(outlier_indices) / len(df) * 100
-        st.metric("Estimated Outlier Percentage", f"{outlier_percentage:.2f}%")
-        
-        if outlier_indices:
-            st.warning(f"Found {len(outlier_indices)} outlier rows: {outlier_indices}")
-    else:
-        st.info("No numerical columns found for outlier detection.")
-    
-    # Return the list of outlier indices for the cleaner
+        final_outliers = (iso_preds == -1) | (ae_preds == -1)
+        outlier_indices = df.index[final_outliers].tolist()
     return outlier_indices
 
-from presidio_analyzer import AnalyzerEngine
-
 def get_risk_report(df):
-    st.header("2. Risk Report (Hazard)")
-    
     analyzer = AnalyzerEngine()
     pii_report = {}
-    
-    # We only scan a sample (e.g., first 50 rows) for performance
     sample_df = df.head(50)
-    
     for col in sample_df.columns:
-        if sample_df[col].dtype == 'object': # Only scan text columns
+        if sample_df[col].dtype == 'object':
             all_text = " ".join(sample_df[col].dropna().astype(str))
-            
-            # Analyze the text
-            analyzer_results = analyzer.analyze(text=all_text, language='en')
-            
-            found_entities = list(set([res.entity_type for res in analyzer_results]))
-            
-            if found_entities:
-                pii_report[col] = found_entities
-
-    if pii_report:
-        st.warning("Found Potential PII (Personally Identifiable Information):")
-        st.json(pii_report)
-        return pii_report.keys() # Return list of risky columns
-    else:
-        st.success("No PII detected in the sampled data.")
-        return []
-    
-
-
-# We need to tell Streamlit to allow Matplotlib to be used
-#st.set_option('deprecation.showPyplotGlobalUse', False)
+            results = analyzer.analyze(text=all_text, language='en')
+            found = list(set([res.entity_type for res in results]))
+            if found:
+                pii_report[col] = found
+    return pii_report.keys()
 
 def get_signal_report(df, target_col):
-    st.header("3. Signal Report (Value)")
-    
-    # --- 1. Preprocessing (Now much smarter!) ---
     proc_df = df.copy()
-
-    # --- Step 1A: Handle NaNs in the TARGET column ---
-    # LabelEncoder will crash if the target column has NaNs.
-    # We'll fill any missing target values with the 'most_frequent' value.
     if proc_df[target_col].isnull().any():
-        st.write(f"Note: Filling missing values in target '{target_col}' with most frequent value.")
-        fill_val = proc_df[target_col].mode()[0]
-        proc_df[target_col] = proc_df[target_col].fillna(fill_val)
-
-    # Now, encode the target
+        proc_df[target_col] = proc_df[target_col].fillna(proc_df[target_col].mode()[0])
     le = LabelEncoder()
     proc_df[target_col] = le.fit_transform(proc_df[target_col])
     
-    
-    # --- Step 1B: Handle High Cardinality in FEATURE columns ---
-    st.write("Checking for high-cardinality text columns...")
     object_cols = proc_df.select_dtypes(include='object').columns
-    CARDINALITY_THRESHOLD = 50 
-    cols_to_drop = []
-    
-    for col in object_cols:
-        if col == target_col: # Skip the target column
-            continue
-            
-        num_unique = proc_df[col].nunique()
-        if num_unique > CARDINALITY_THRESHOLD:
-            cols_to_drop.append(col)
-            
+    cols_to_drop = [col for col in object_cols if col != target_col and proc_df[col].nunique() > 50]
     if cols_to_drop:
-        st.warning(f"Dropping high-cardinality columns (>{CARDINALITY_THRESHOLD} unique values) from model: {cols_to_drop}")
         proc_df = proc_df.drop(columns=cols_to_drop)
-    else:
-        st.success("No high-cardinality columns found. Good!")
-        
     
-    # --- Step 1C: One-Hot Encode the remaining categoricals ---
-    st.write("One-hot encoding remaining categorical features...")
     proc_df = pd.get_dummies(proc_df, drop_first=True)
+    proc_df = proc_df.fillna(-999)
     
-    # Handle any remaining missing values (e.g., in numerical columns)
-    proc_df = proc_df.fillna(-999) 
-    
-    # --- 2. Train Model ---
-    st.write("Training model...")
     X = proc_df.drop(target_col, axis=1)
     y = proc_df[target_col]
     
-    # Make sure we still have features left after dropping
     if X.shape[1] == 0:
-        st.error("No valid features left to train on after preprocessing. Cannot create Signal Report.")
-        return []
+        return [], pd.DataFrame()
 
     model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
     model.fit(X, y)
     
-    # --- 3. Get Feature Importance ---
     importance_df = pd.DataFrame({
         'Feature': X.columns,
         'Importance': model.feature_importances_
     }).sort_values(by='Importance', ascending=False)
     
-    st.subheader("Top 10 Most Important Features")
-    st.dataframe(importance_df.head(10))
-    
-    # --- 4. Get Feature Importance Plot ---
+    # Plot
     st.subheader("Feature Importance Plot")
-    st.info("This chart shows the relative 'importance' of each feature in predicting the target. Higher bars mean the model relies on that feature more.")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    top_10 = importance_df.head(10).iloc[::-1] 
+    ax.barh(top_10['Feature'], top_10['Importance'], color='#4A90E2')
+    ax.set_title("Top 10 Predictive Features")
+    ax.set_xlabel("Importance Score")
+    st.pyplot(fig)
+    add_download_button(fig, "signal_audit_chart") # Add download button
+    
+    return importance_df['Feature'].head(10).tolist(), importance_df
 
-    chart_data = importance_df.head(10).set_index('Feature')
-    
-    st.bar_chart(chart_data)
-    
-    return importance_df['Feature'].head(10).tolist()
+def get_drift_report(current_df, reference_df):
+    current_cols = set(current_df.select_dtypes(include=[np.number]).columns)
+    ref_cols = set(reference_df.select_dtypes(include=[np.number]).columns)
+    common_cols = list(current_cols.intersection(ref_cols))
+    drift_data = []
+    for col in common_cols:
+        stat, p_value = ks_2samp(current_df[col].dropna(), reference_df[col].dropna())
+        has_drift = p_value < 0.05
+        drift_data.append({
+            "Feature": col,
+            "P-Value": f"{p_value:.4f}",
+            "Status": "🔴 Drift" if has_drift else "🟢 Stable"
+        })
+    return drift_data
 
 def get_final_recommendations(risky_cols, top_features):
-    st.header("4. Final Audit Recommendations")
-    
-    # Find the intersection of risky and important columns
-    # We must be careful: one-hot encoding (e.g., 'country_USA')
-    # will make the feature name different from the PII column ('country').
-    
     critical_features = []
     for risky_col in risky_cols:
         for feature in top_features:
             if feature.startswith(risky_col):
-                critical_features.append(f"'{feature}' (derived from PII column '{risky_col}')")
-
-    if critical_features:
-        st.error("CRITICAL AUDIT WARNING")
-        st.markdown("Your model is **highly dependent** on features that contain **sensitive PII**:")
-        for feature in critical_features:
-            st.markdown(f"- **{feature}**")
-        st.markdown("This creates a major **privacy risk** and may lead to biased outcomes. **Recommendation:** Anonymize, hash, or remove these features before training.")
-    else:
-        st.success("Good news! Your model's top features do not appear to contain sensitive PII.")
-    
+                critical_features.append(f"'{feature}' (from '{risky_col}')")
     return critical_features
 
-def clean_data(df, risky_cols, outlier_indices, 
-               do_pii_removal, do_outlier_removal, do_missing_fix, 
-               cleaning_strategies):
-    """
-    Cleans the dataframe based on user-selected operations.
-    """
-    st.header("5. Cleaning Data...")
-    df_cleaned = df.copy()
+# ==========================================
+# 2. GUIDE & VISUALIZATION FUNCTIONS
+# ==========================================
+
+def get_deep_eda_report(df):
+    st.subheader("Feature Correlations")
+    st.info("Darker colors mean a stronger relationship between features.")
+    numeric_df = df.select_dtypes(include=[np.number])
+    if len(numeric_df.columns) > 1:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.heatmap(numeric_df.corr(), annot=True, cmap='coolwarm', fmt=".2f", ax=ax)
+        st.pyplot(fig)
+        add_download_button(fig, "eda_heatmap") # Add download button
+    else:
+        st.warning("Not enough numerical features for heatmap.")
+
+def get_model_scout(df, target_col):
+    st.subheader("AutoML Scout Results")
+    proc_df = df.copy().dropna()
+    le = LabelEncoder()
+    proc_df[target_col] = le.fit_transform(proc_df[target_col])
+    proc_df = pd.get_dummies(proc_df, drop_first=True)
+    X = proc_df.drop(target_col, axis=1)
+    y = proc_df[target_col]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    # 1. Drop PII columns (if user selected it)
-    if do_pii_removal:
-        st.write(f"Dropping PII columns: {risky_cols}")
-        df_cleaned = df_cleaned.drop(columns=risky_cols, errors='ignore')
-    else:
-        st.write("Skipping PII column removal.")
-        
-    # 2. Drop outlier rows (if user selected it)
-    if do_outlier_removal:
-        st.write(f"Dropping {len(outlier_indices)} outlier rows.")
-        df_cleaned = df_cleaned.drop(index=outlier_indices, errors='ignore')
-    else:
-        st.write("Skipping outlier row removal.")
-        
-    # 3. Apply missing data strategies (if user selected it)
-    if do_missing_fix:
-        st.write("Applying strategies for missing values...")
-        cols_to_drop_rows = []
-        
-        for col, strategy_info in cleaning_strategies.items():
-            strategy = strategy_info["strategy"]
+    models = {
+        "Logistic Regression": LogisticRegression(max_iter=1000),
+        "Random Forest": RandomForestClassifier(n_estimators=50),
+        "XGBoost": xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+    }
+    results = []
+    for name, model in models.items():
+        try:
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+            results.append({"Model": name, "Accuracy": accuracy_score(y_test, y_pred)})
+        except:
+            results.append({"Model": name, "Accuracy": 0})
             
-            # Check if the column still exists (it might have been dropped as PII)
-            if col not in df_cleaned.columns:
-                st.warning(f"Skipping missing data strategy for '{col}' (column was already removed).")
-                continue
-                
-            if strategy == "Drop Rows with Missing Data":
-                cols_to_drop_rows.append(col)
-                
-            elif strategy == "Fill with Custom Value":
-                custom_val = strategy_info["value"]
-                try:
-                    if pd.api.types.is_numeric_dtype(df_cleaned[col]):
-                        custom_val = pd.to_numeric(custom_val)
-                    st.write(f"- Filling '{col}' with custom value: '{custom_val}'")
-                    df_cleaned[col] = df_cleaned[col].fillna(custom_val)
-                except ValueError:
-                    st.error(f"Could not convert custom value '{custom_val}' to a number for column '{col}'. Filling with 0 instead.")
-                    df_cleaned[col] = df_cleaned[col].fillna(0)
-                    
-            elif strategy == "Fill with Median":
-                median_val = df_cleaned[col].median()
-                st.write(f"- Filling '{col}' with median: {median_val}")
-                df_cleaned[col] = df_cleaned[col].fillna(median_val)
-                
-            elif strategy == "Fill with Mean":
-                mean_val = df_cleaned[col].mean()
-                st.write(f"- Filling '{col}' with mean: {mean_val:.2f}")
-                df_cleaned[col] = df_cleaned[col].fillna(mean_val)
-                
-            elif strategy == "Fill with Most Frequent":
-                mode_val = df_cleaned[col].mode()[0]
-                st.write(f"- Filling '{col}' with most frequent: '{mode_val}'")
-                df_cleaned[col] = df_cleaned[col].fillna(mode_val)
-                
-        # Handle row drops at the end
-        if cols_to_drop_rows:
-            st.write(f"Dropping rows with missing data in columns: {cols_to_drop_rows}")
-            df_cleaned = df_cleaned.dropna(subset=cols_to_drop_rows)
-    else:
-        st.write("Skipping missing data fixing.")
-            
-    st.success("Cleaning complete! Your file is ready for download.")
-    st.dataframe(df_cleaned.head())
+    results_df = pd.DataFrame(results).sort_values(by="Accuracy", ascending=False)
+    best_model = results_df.iloc[0]
+    st.success(f"🏆 Best Model: **{best_model['Model']}** ({best_model['Accuracy']:.2%} Accuracy)")
+    st.dataframe(results_df)
+    return results_df
+
+def get_visualization_studio(df):
+    st.header("Visualization Studio 🎨")
+    st.info("Create custom charts to explore your data.")
+    num_cols = df.select_dtypes(include=np.number).columns.tolist()
+    cat_cols = df.select_dtypes(include='object').columns.tolist()
+    chart_type = st.selectbox("Choose Chart Type:", ["Bar Chart", "Line Chart", "Scatter Plot", "Histogram", "Correlation Heatmap"])
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    valid_plot = False
+    
+    if chart_type == "Bar Chart":
+        x, y = st.selectbox("X Axis", cat_cols), st.selectbox("Y Axis", num_cols)
+        if x and y: 
+            sns.barplot(data=df, x=x, y=y, ax=ax, palette="viridis")
+            plt.xticks(rotation=45)
+            valid_plot = True
+    elif chart_type == "Scatter Plot":
+        x, y = st.selectbox("X Axis", num_cols, key="sx"), st.selectbox("Y Axis", num_cols, key="sy")
+        if x and y: 
+            sns.scatterplot(data=df, x=x, y=y, ax=ax)
+            valid_plot = True
+    elif chart_type == "Histogram":
+        x = st.selectbox("Column", num_cols)
+        if x: 
+            sns.histplot(data=df, x=x, kde=True, ax=ax)
+            valid_plot = True
+    elif chart_type == "Correlation Heatmap":
+        if len(num_cols) > 1: 
+            sns.heatmap(df[num_cols].corr(), annot=True, cmap='coolwarm', ax=ax)
+            valid_plot = True
+    elif chart_type == "Line Chart":
+        x, y = st.selectbox("X Axis", df.columns), st.selectbox("Y Axis", num_cols)
+        if x and y: 
+            sns.lineplot(data=df, x=x, y=y, ax=ax)
+            valid_plot = True
+
+    if valid_plot:
+        st.pyplot(fig)
+        add_download_button(fig, f"custom_{chart_type}") # Add download button
+
+# ==========================================
+# 3. CLEANING & UTILS
+# ==========================================
+
+def clean_data(df, risky_cols, outlier_indices, do_pii, do_out, do_miss, strategies):
+    df_cleaned = df.copy()
+    if do_pii: df_cleaned = df_cleaned.drop(columns=risky_cols, errors='ignore')
+    if do_out: df_cleaned = df_cleaned.drop(index=outlier_indices, errors='ignore')
+    if do_miss:
+        for col, info in strategies.items():
+            if col not in df_cleaned.columns: continue
+            strat = info["strategy"]
+            if strat == "Drop Rows": df_cleaned = df_cleaned.dropna(subset=[col])
+            elif strat == "Median": df_cleaned[col] = df_cleaned[col].fillna(df_cleaned[col].median())
+            elif strat == "Mean": df_cleaned[col] = df_cleaned[col].fillna(df_cleaned[col].mean())
+            elif strat == "Most Frequent": df_cleaned[col] = df_cleaned[col].fillna(df_cleaned[col].mode()[0])
+            elif strat == "Custom Value": 
+                val = info["value"]
+                if pd.api.types.is_numeric_dtype(df_cleaned[col]):
+                    try: val = pd.to_numeric(val)
+                    except: val = 0
+                df_cleaned[col] = df_cleaned[col].fillna(val)
     return df_cleaned
 
 @st.cache_data
 def convert_df_to_csv(df):
-    # IMPORTANT: Cache the conversion to prevent re-running on every page load
     return df.to_csv(index=False).encode('utf-8')
-st.set_page_config(layout="wide")
-#st.title("Data Health & Risk Auditor 📈")
 
 def get_missing_columns(df):
-    """Finds columns with missing data and their types."""
-    missing_cols = df.columns[df.isnull().any()].tolist()
-    missing_info = {}
-    for col in missing_cols:
-        col_type = 'numerical' if pd.api.types.is_numeric_dtype(df[col]) else 'categorical'
-        missing_info[col] = col_type
-    return missing_info
+    cols = df.columns[df.isnull().any()].tolist()
+    return {c: 'numerical' if pd.api.types.is_numeric_dtype(df[c]) else 'categorical' for c in cols}
 
+def generate_cleaning_script(risky_cols, outlier_indices, strategies):
+    script_content = f"""
+import pandas as pd
+import numpy as np
 
+def clean_dataset(df):
+    print("Starting Cleaning Pipeline...")
+    # 1. Drop PII
+    pii_cols = {list(risky_cols)}
+    if pii_cols: df = df.drop(columns=pii_cols, errors='ignore')
+    # 2. Drop Outliers
+    outlier_indices = {outlier_indices}
+    if outlier_indices: df = df.drop(index=outlier_indices, errors='ignore')
+    # 3. Impute
+    """
+    if strategies:
+        for col, info in strategies.items():
+            strat = info['strategy']
+            val = info.get('value', None)
+            script_content += f"\n    # Strategy for '{col}': {strat}"
+            if strat == "Median": script_content += f"\n    df['{col}'] = df['{col}'].fillna(df['{col}'].median())"
+            elif strat == "Mean": script_content += f"\n    df['{col}'] = df['{col}'].fillna(df['{col}'].mean())"
+            elif strat == "Most Frequent": script_content += f"\n    df['{col}'] = df['{col}'].fillna(df['{col}'].mode()[0])"
+            elif strat == "Custom Value":
+                if str(val).replace('.','',1).isdigit(): script_content += f"\n    df['{col}'] = df['{col}'].fillna({val})"
+                else: script_content += f"\n    df['{col}'] = df['{col}'].fillna('{val}')"
+            elif strat == "Drop Rows": script_content += f"\n    df = df.dropna(subset=['{col}'])"
+    script_content += "\n    return df"
+    return script_content
+
+# ==========================================
+# 4. REPORTING
+# ==========================================
 class PDF(FPDF):
-    """Custom PDF class to add header and footer."""
     def header(self):
         self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'Data Health & Risk Auditor Report', 0, 1, 'C')
-        self.set_font('Arial', '', 8)
-        self.cell(0, 5, f'Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', 0, 1, 'C')
-        self.ln(10)
-
+        self.cell(0, 10, 'Data Health Audit Report', 0, 1, 'C')
+        self.ln(5)
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
         self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
 
-    def chapter_title(self, title):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, title, 0, 1, 'L')
-        self.ln(2)
-
-    def chapter_body(self, body):
-        self.set_font('Arial', '', 10)
-        self.multi_cell(0, 5, body)
-        self.ln()
-
-def generate_simple_report(missing_df, outliers_list, risky_list, top_features_list, critical_list):
-    """Generates a simple, non-technical summary of the audit."""
-    
-    report_text = ""
-    
-    # 1. Quality Summary
-    report_text += "1. Data Quality (Toxicity)\n"
-    report_text += "--------------------------------\n"
-    if not missing_df.empty:
-        report_text += f"Found {len(missing_df)} columns with missing data.\n"
-        for col in missing_df.index:
-            report_text += f"  - '{col}' has {missing_df.loc[col, 'Missing Values']} missing values.\n"
-    else:
-        report_text += "Good news! No missing data found.\n"
-    
-    if outliers_list:
-        report_text += f"\nFound {len(outliers_list)} rows that appear to be outliers (statistically strange data).\n"
-    else:
-        report_text += "Good news! No major outliers were detected.\n"
-    report_text += "\n\n"
-
-    # 2. Risk Summary
-    report_text += "2. Data Risk (Hazard)\n"
-    report_text += "--------------------------------\n"
-    if risky_list:
-        report_text += f"Warning! Found {len(risky_list)} columns that may contain sensitive Personal Information (PII):\n"
-        for col in risky_list:
-            report_text += f"  - '{col}'\n"
-        report_text += "This data should be handled with care.\n"
-    else:
-        report_text += "Good news! No sensitive PII was detected in the data sample.\n"
-    report_text += "\n\n"
-
-    # 3. Signal Summary
-    report_text += "3. Data Value (Signal)\n"
-    report_text += "--------------------------------\n"
-    if top_features_list:
-        report_text += "When trying to predict your target, the model found these features to be the most important:\n"
-        for i, feature in enumerate(top_features_list[:5], 1): # Top 5
-            report_text += f"  {i}. {feature}\n"
-    else:
-        report_text += "Could not determine the most important features.\n"
-    report_text += "\n\n"
-    
-    # 4. Final Recommendation
-    report_text += "4. Final Recommendation\n"
-    report_text += "--------------------------------\n"
-    if critical_list:
-        report_text += "CRITICAL WARNING: Your model's most important features are directly linked to sensitive PII.\n"
-        report_text += "This means the model is likely biased and creates a major security risk. It should not be used.\n"
-        report_text += f"Problem features: {', '.join(critical_list)}\n"
-    elif risky_list:
-        report_text += "Your model's top features are clean, but the dataset still contains sensitive PII. Be sure to remove it before sharing.\n"
-    else:
-        report_text += "Excellent! Your data appears to be clean, non-hazardous, and the model is using safe features.\n"
-
-    return report_text
-
-def create_pdf(report_string):
-    """Creates a PDF file from the report string."""
+def create_pdf_report(missing_df, outlier_count, risky_cols, top_features, critical_features, drift_data):
     pdf = PDF()
     pdf.add_page()
-    pdf.chapter_body(report_string)
-    # NEW, FIXED LINE
-    # NEW, FIXED LINE
+    pdf.set_font("Arial", size=12)
+    safe_width = 190
+    pdf.cell(0, 10, "1. Toxicity Audit", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Arial", size=10)
+    pdf.multi_cell(safe_width, 5, f"Outliers: {outlier_count}")
+    if not missing_df.empty: pdf.multi_cell(safe_width, 5, f"Missing Cols: {len(missing_df)}")
+    pdf.ln(5)
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 10, "2. Hazard Audit (PII)", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Arial", size=10)
+    if risky_cols: pdf.multi_cell(safe_width, 5, f"PII Found: {', '.join(risky_cols)}")
+    else: pdf.multi_cell(safe_width, 5, "No PII detected.")
+    pdf.ln(5)
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 10, "3. Signal Audit", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Arial", size=10)
+    if top_features: pdf.multi_cell(safe_width, 5, f"Top Features: {', '.join(top_features[:5])}")
+    pdf.ln(5)
     return bytes(pdf.output(dest='S'))
-# --- 3. YOUR STREAMLIT APP LOGIC LAST ---
 
-# Initialize session state to hold our cleaned data
-# --- 3. YOUR STREAMLIT APP LOGIC LAST ---
+# ==========================================
+# 5. MAIN APP LOGIC
+# ==========================================
 
-# Initialize session state to hold our cleaned data
-# --- 3. YOUR STREAMLIT APP LOGIC LAST ---
-
-# Initialize session state
-# --- 3. YOUR STREAMLIT APP LOGIC LAST ---
-
-# Initialize session state for all our results
 if 'cleaned_data' not in st.session_state:
     st.session_state.cleaned_data = None
     st.session_state.audit_run = False
-    st.session_state.risky_columns = []
+    st.session_state.importance_df = pd.DataFrame()
+    st.session_state.drift_data = []
+    st.session_state.risky_cols = []
     st.session_state.outlier_indices = []
+    st.session_state.missing_report = pd.DataFrame()
     st.session_state.top_features = []
     st.session_state.critical_features = []
-    st.session_state.missing_report = pd.DataFrame()
+    st.session_state.strategies = {}
 
-st.set_page_config(layout="wide")
-# --- NEW TITLE & ANIMATION ---
-# 1. Load the Lottie animation
-# NEW, RELIABLE URL:
-# --- NEW TITLE & ANIMATION ---
-# 1. Load the Lottie animation
-lottie_json = animations.load_lottieurl(animations.LOTTIE_URL_HEADER)
-
-# 2. Create a two-column layout
+lottie_header = animations.load_lottieurl(animations.LOTTIE_URL_HEADER)
 col1, col2 = st.columns([1, 4])
-# ... (rest of the code)
-
 with col1:
-    if lottie_json:
-        st_lottie(
-            lottie_json,
-            speed=1,
-            reverse=False,
-            loop=True,
-            quality="low", # Use "low" for better performance
-            height=150,
-            width=150,
-            key="data_animation"
-        )
-    else:
-        st.write("Loading animation...")
-
+    if lottie_header: st_lottie(lottie_header, height=150, key="header")
 with col2:
-    st.title("Data Health & Risk Auditor")
-    st.markdown("*Your all-in-one tool for cleaning 'data manure'.*")
-# --- END NEW TITLE ---
-uploaded_file = st.file_uploader("Choose a CSV file")
+    st.title("The Data Refinery")
+    st.markdown("*Automated Health & Risk Auditor*")
+
+st.info("Step 1: Upload your data.")
+uploaded_file = st.file_uploader("1. Current Dataset (Required)", type="csv")
+uploaded_ref = st.file_uploader("2. Reference Dataset (Optional - for Drift)", type="csv")
 
 if uploaded_file is not None:
-    dataframe = pd.read_csv(uploaded_file)
-    st.header("Data Preview")
-    st.dataframe(dataframe.head())
+    uploaded_file.seek(0)
+    df = pd.read_csv(uploaded_file)
+    ref_df = None
+    if uploaded_ref is not None:
+        uploaded_ref.seek(0)
+        try: ref_df = pd.read_csv(uploaded_ref)
+        except: pass
 
-    all_columns = dataframe.columns.tolist()
-    target_column = st.selectbox("Select your Target Variable (for signal analysis)", all_columns)
-
-    # --- Cleaning Operations Toggles ---
+    with st.container():
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Rows", df.shape[0])
+        k2.metric("Columns", df.shape[1])
+        k3.metric("Num Features", len(df.select_dtypes(include=np.number).columns))
+        k4.metric("Cat Features", len(df.select_dtypes(include='object').columns))
+        with st.expander("View Raw Data"):
+            st.dataframe(df.head(), use_container_width=True)
+    st.markdown("---")
+    target_col = st.selectbox("Target Variable (What to predict?)", df.columns)
+    
     st.header("Cleaning Operations")
-    st.info("Choose which cleaning steps to perform.")
+    c1, c2, c3 = st.columns(3)
+    do_pii = c1.checkbox("Remove PII", value=True)
+    do_out = c2.checkbox("Remove Outliers", value=True)
+    do_miss = c3.checkbox("Fix Missing Data", value=True)
     
-    do_pii_removal = st.checkbox("Remove PII Columns (e.g., Cast, Director)", value=True)
-    do_outlier_removal = st.checkbox("Remove Outlier Rows", value=True)
-    do_missing_fix = st.checkbox("Fix Missing Data", value=True)
-    
-    cleaning_strategies = {} # Initialize an empty dict
-    missing_info = {} # Initialize
-    
-    if do_missing_fix:
-        missing_info = get_missing_columns(dataframe)
-        if missing_info:
-            with st.expander("Advanced Missing Data Options", expanded=True):
-                # ... (all your existing code for the missing data expander) ...
-                st.info("Set your strategy for handling missing data in each column.")
-                
-                for col, col_type in missing_info.items():
-                    if col_type == 'numerical':
-                        options = ["Fill with Median", "Fill with Mean", "Fill with Custom Value", "Drop Rows with Missing Data"]
-                        strategy = st.selectbox(f"Strategy for '{col}' (Numerical):", options, key=f"{col}_strategy")
-                        
-                        if strategy == "Fill with Custom Value":
-                            custom_val = st.text_input(f"Custom value for '{col}':", key=f"{col}_custom", value="0")
-                            cleaning_strategies[col] = {"strategy": strategy, "value": custom_val}
-                        else:
-                            cleaning_strategies[col] = {"strategy": strategy}
-                            
-                    else: # Categorical
-                        options = ["Fill with Most Frequent", "Fill with Custom Value", "Drop Rows with Missing Data"]
-                        strategy = st.selectbox(f"Strategy for '{col}' (Categorical):", options, key=f"{col}_strategy")
-                        
-                        if strategy == "Fill with Custom Value":
-                            custom_val = st.text_input(f"Custom value for '{col}':", key=f"{col}_custom", value="Missing")
-                            cleaning_strategies[col] = {"strategy": strategy, "value": custom_val}
-                        else:
-                            cleaning_strategies[col] = {"strategy": strategy}
-        else:
-            st.info("No missing data found to clean.")
+    strategies = {}
+    if do_miss:
+        miss_info = get_missing_columns(df)
+        if miss_info:
+            with st.expander("Advanced Missing Data Options"):
+                for col, dtype in miss_info.items():
+                    opt = st.selectbox(f"Fix '{col}' ({dtype})", ["Median" if dtype=='numerical' else "Most Frequent", "Drop Rows"])
+                    strategies[col] = {"strategy": opt}
 
-    # --- Main Button ---
-   # --- Main Button ---
-    if st.button("Run Data Audit & Clean"):
-        
-        with st.status("Running Data Audit & Cleaning...", expanded=True) as status:
+    if st.button("Run Audit & Clean"):
+        with st.status("Refining Data...", expanded=True) as status:
+            anim_ph = st.empty()
+            l_proc = animations.load_lottielocal(animations.PROCESSING_ANIMATION_PATH)
+            if l_proc:
+                with anim_ph.container():
+                    st_lottie(l_proc, height=150, key="proc")
             
-            # --- 1. Create a placeholder for our animations ---
-            animation_placeholder = st.empty()
+            st.session_state.strategies = strategies
+            st.write("Running Toxicity Audit...")
+            st.session_state.missing_report = get_quality_report(df)
+            st.session_state.outlier_indices = get_outlier_report(df)
+            st.write("Running Hazard Audit...")
+            st.session_state.risky_cols = get_risk_report(df)
+            st.write("Running Signal Audit...")
+            top_feat, imp_df = get_signal_report(df, target_col) # Plots & returns DF
+            st.session_state.top_features = top_feat
+            st.session_state.importance_df = imp_df
+            st.session_state.critical_features = get_final_recommendations(st.session_state.risky_cols, top_feat)
             
-            # --- 2. Show the PROCESSING animation ---
-            lottie_processing = animations.load_lottielocal(animations.PROCESSING_ANIMATION_PATH)
-            if lottie_processing:
-                with animation_placeholder.container():
-                    st_lottie(lottie_processing, speed=1, loop=True, quality="low", height=150, width=150)
+            if ref_df is not None:
+                st.write("Checking Data Drift...")
+                st.session_state.drift_data = get_drift_report(df, ref_df)
             
-            # --- 3. Run all your existing steps (unchanged) ---
-            st.write("Step 1/5: Analyzing data quality (toxicity)...")
-            st.session_state.missing_report = get_quality_report(dataframe)
+            st.write("Running AutoML Scout...")
+            get_model_scout(df, target_col)
             
-            st.write("Step 2/5: Detecting outliers...")
-            st.session_state.outlier_indices = get_outlier_report(dataframe)
-            
-            st.write("Step 3/5: Scanning for PII (hazard)...")
-            st.session_state.risky_columns = get_risk_report(dataframe)
-            
-            st.write("Step 4/5: Analyzing feature signal (value)...")
-            st.session_state.top_features = get_signal_report(dataframe, target_column)
-            
-            st.write("Step 5/5: Generating final recommendations...")
-            st.session_state.critical_features = get_final_recommendations(st.session_state.risky_columns, st.session_state.top_features)
-            
-            st.write("Applying cleaning operations...")
-            cleaned_df = clean_data(dataframe, st.session_state.risky_columns, st.session_state.outlier_indices, 
-                                    do_pii_removal, do_outlier_removal, do_missing_fix, 
-                                    cleaning_strategies)
-            
-            st.session_state.cleaned_data = cleaned_df
+            st.write("Cleaning Data...")
+            st.session_state.cleaned_data = clean_data(df, st.session_state.risky_cols, st.session_state.outlier_indices, do_pii, do_out, do_miss, strategies)
             st.session_state.audit_run = True
             
-            # --- 4. Show the "BUGS CLEARED" animation ---
-            lottie_complete = animations.load_lottielocal(animations.COMPLETE_ANIMATION_PATH)
-            if lottie_complete:
-                with animation_placeholder.container():
-                    st_lottie(lottie_complete, speed=1, loop=False, quality="low", height=150, width=150)
-            
-            # Pause for a moment to see the "complete" animation
-            time.sleep(2) 
-            
-            # --- 5. Update the status box to "complete" ---
+            l_done = animations.load_lottielocal(animations.COMPLETE_ANIMATION_PATH)
+            if l_done:
+                with anim_ph.container():
+                    st_lottie(l_done, height=150, loop=False, key="done")
+            time.sleep(1)
             status.update(label="Audit Complete!", state="complete")
-            rain(
-            emoji="👾",  # You can use any emoji here!
-            font_size=54,
-            falling_speed=2,
-            animation_length="10s",
-        )
-# --- Show download buttons ONLY if the audit has been run ---
+        
+        rain(emoji="✨", font_size=54, falling_speed=5, animation_length="1s")
+
 if st.session_state.audit_run:
-    st.header("Download Results")
+    st.markdown("---")
+    st.header("🔎 Audit Results & Studio")
     
-    # --- 1. CSV Download Button ---
-    if st.session_state.cleaned_data is not None:
-        st.info("This file has been cleaned based on your selected operations.")
-        csv_data = convert_df_to_csv(st.session_state.cleaned_data)
-        st.download_button(
-            label="Download Cleaned_Data.csv",
-            data=csv_data,
-            file_name="cleaned_data.csv",
-            mime="text/csv",
-            key="csv_download"
-        )
+    # ADDED "Deep Dive EDA" back to the tabs
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Signal & Scout", "🔍 Deep Dive EDA", "⚠️ Risk & Toxicity", "📉 Data Drift", "🎨 Viz Studio", "📥 Downloads"])
     
-    # --- 2. PDF Download Button ---
-    st.info("A non-technical summary of all the findings.")
-    
-    # Generate the report text
-    report_string = generate_simple_report(
-        st.session_state.missing_report,
-        st.session_state.outlier_indices,
-        st.session_state.risky_columns,
-        st.session_state.top_features,
-        st.session_state.critical_features
-    )
-    
-    # Create the PDF
-    pdf_data = create_pdf(report_string)
-    
-    st.download_button(
-        label="Download Report.pdf",
-        data=pdf_data,
-        file_name="Data_Audit_Report.pdf",
-        mime="application/pdf",
-        key="pdf_download"
-    )
+    with tab1:
+        st.subheader("Feature Importance")
+        if not st.session_state.importance_df.empty:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            top10 = st.session_state.importance_df.head(10).iloc[::-1]
+            ax.barh(top10['Feature'], top10['Importance'], color='#4A90E2')
+            st.pyplot(fig)
+            add_download_button(fig, "final_signal_chart") # Download button for result tab
+        get_model_scout(df, target_col)
+        
+    with tab2:
+        get_deep_eda_report(df) # Now accessible
+        
+    with tab3:
+        st.subheader("Toxicity")
+        if not st.session_state.missing_report.empty: st.dataframe(st.session_state.missing_report)
+        st.metric("Outliers Removed", len(st.session_state.outlier_indices))
+        st.subheader("Hazard")
+        if st.session_state.risky_cols: st.error(f"PII Removed: {list(st.session_state.risky_cols)}")
+        else: st.success("No PII Found.")
+        
+    with tab4:
+        if st.session_state.drift_data: st.dataframe(pd.DataFrame(st.session_state.drift_data))
+        else: st.info("No reference dataset provided.")
+            
+    with tab5:
+        get_visualization_studio(df)
+        
+    with tab6:
+        st.subheader("Download Results")
+        with st.container():
+            if st.session_state.cleaned_data is not None:
+                csv = convert_df_to_csv(st.session_state.cleaned_data)
+                st.download_button("📥 Download Cleaned_Data.csv", csv, "cleaned.csv", "text/csv")
+            pdf = create_pdf_report(
+                st.session_state.missing_report,
+                len(st.session_state.outlier_indices),
+                st.session_state.risky_cols,
+                st.session_state.top_features,
+                st.session_state.critical_features,
+                st.session_state.drift_data
+            )
+            st.download_button("📄 Download Report.pdf", pdf, "report.pdf", "application/pdf")
+            
+            current_strategies = st.session_state.get('strategies', {})
+            py_script = generate_cleaning_script(st.session_state.risky_cols, st.session_state.outlier_indices, current_strategies)
+            st.download_button("📜 Download Pipeline Code (.py)", py_script, "cleaning_pipeline.py", "text/plain")

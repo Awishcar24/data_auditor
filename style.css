@@ -1,0 +1,66 @@
+/* 1. GLOBAL SETTINGS */
+/* Import a modern tech font (Roboto Mono for that 'coding' feel) */
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400;700&display=swap');
+
+/* Change the main background to a dark gradient */
+.stApp {
+    background: linear-gradient(135deg, #0E1117 0%, #161B22 100%);
+    font-family: 'Roboto Mono', monospace;
+}
+
+/* 2. CUSTOMIZE HEADERS */
+h1, h2, h3 {
+    color: #58A6FF !important; /* GitHub-style blue */
+    font-family: 'Roboto Mono', monospace;
+    font-weight: 700;
+}
+
+/* 3. CARD-LIKE CONTAINERS */
+/* Makes the 'st.status' and other boxes look like floating glass cards */
+div[data-testid="stExpander"], div[data-testid="stStatusWidget"] {
+    background-color: rgba(22, 27, 34, 0.8);
+    border: 1px solid #30363D;
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* 4. METRIC CARDS (for your Outlier stats) */
+div[data-testid="stMetric"] {
+    background-color: #0D1117;
+    padding: 15px;
+    border-radius: 8px;
+    border-left: 4px solid #238636; /* Green accent line */
+    box-shadow: 2px 2px 10px rgba(0,0,0,0.5);
+}
+label[data-testid="stMetricLabel"] {
+    color: #8B949E;
+}
+div[data-testid="stMetricValue"] {
+    color: #FFFFFF;
+}
+
+/* 5. CUSTOM BUTTONS */
+/* Make buttons look like 'Cyberpunk' actions */
+div.stButton > button {
+    background: linear-gradient(90deg, #238636 0%, #2EA043 100%);
+    color: white;
+    border: none;
+    padding: 10px 24px;
+    border-radius: 5px;
+    transition: all 0.3s ease;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    width: 100%;
+}
+
+div.stButton > button:hover {
+    background: linear-gradient(90deg, #2EA043 0%, #3FB950 100%);
+    box-shadow: 0 0 15px rgba(46, 160, 67, 0.6);
+    transform: translateY(-2px);
+}
+
+/* 6. HIDE STREAMLIT BRANDING */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
